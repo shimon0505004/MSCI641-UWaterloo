@@ -1,0 +1,4 @@
+good
+test
+bad
+thermometer
