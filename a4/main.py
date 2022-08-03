@@ -1,175 +1,54 @@
-import csv
-import time
-import random
-
-import gensim.models
-import nltk as nltk
-import sys, os, re
-from pathlib import Path
-
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from gensim.test.utils import common_texts
-from gensim.models import Word2Vec
+import sys
 from helper import *
-from gensim.models import KeyedVectors
-from torch.utils.data import DataLoader
+from dataloader import make_dataloader
+from models import FC_FF_NN_Model
+
+import torch
+from tqdm import tqdm
 
 
-class TextDataset(torch.utils.data.Dataset):
-    def __init__(self, textDatas, labels):
-        'Initialization'
-        self.labels = labels
-        self.text_Datas = textDatas
+def train(dloader, model, criterion, optimizer):
+    model.train()
+    losses, acc = [], []
+    total_acc = 0
+    print(len(dloader))
+    for batch in tqdm(dloader):
+        y = batch["label"]
+        #print(batch["length"])
+        logits = model(batch["input_ids"])
+        loss = criterion(logits, y)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        losses.append(loss.item())
+        preds = torch.argmax(logits, -1)
+        total_acc += torch.sum((preds==y))
+        acc.append((preds == y).float().mean().item())
 
-    def __len__(self):
-        'Denotes the total number of samples'
-        return len(self.text_Datas)
+    print(
+        f"Train Loss: {np.array(losses).mean():.4f} | Train Accuracy: {np.array(acc).mean():.4f}"
+    )
 
-    def __getitem__(self, index):
-        'Generates one sample of data'
-        # Select sample
-        X = self.text_Datas[index]
-        y = self.labels[index]
-
-        return X, y
-
-
-class FC_FF_NN_Model(nn.Module):
-    def __init__(self, word_vectors, hiddenLayer, dropoutRate):
-        super(FC_FF_NN_Model, self).__init__()
-        self.learningRate = 5
-        self.word_vectors = word_vectors
-        self.embeddings = nn.Embedding.from_pretrained(torch.FloatTensor(word_vectors.vectors))
-        self.hidden = hiddenLayer  # nn.Sigmoid()
-        embedding_dim = word_vectors.vector_size
-        num_class = 2
-        self.fc = nn.Linear(embedding_dim, num_class)
-        self.finalLayer = nn.Softmax(dim=1)
-        self.loss = nn.CrossEntropyLoss()
-        self.dropout = nn.Dropout(p=dropoutRate)
-        self.optimizer = torch.optim.SGD(self.parameters(), lr=self.learningRate, weight_decay=1e-5)
-        self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=30, gamma=0.1)
+    return np.array(acc).mean()
 
 
-    def forward(self, inputLine):
-        hidden_layer_input = self.hiddenLayerInput(inputLine)
-        translationLayer_layer_input = self.hidden(hidden_layer_input)
-        dropout_layer_input = self.fc(translationLayer_layer_input)
-        final_layer_input = self.dropout(dropout_layer_input)
-        final_layer_output = self.finalLayer(final_layer_input)
-        print(final_layer_output)
-        return final_layer_output
+@torch.no_grad()
+def test(dloader, model, criterion):
+    model.eval()
+    losses, acc = [], []
+    for batch in dloader:
+        y = batch["label"]
+        logits =model(batch["input_ids"])
+        loss = criterion(logits, y)
+        losses.append(loss.item())
+        preds = torch.argmax(logits, -1)
+        acc.append((preds == y).float().mean().item())
 
-    def hiddenLayerInput(self, line):
-        indicesList = processLineToIndices(line, self.word_vectors)
-        sum_of_embeddings = None
-        number_of_embeddings = 0
-        for indices in indicesList:
-            embeddingTensor = self.embeddings(torch.LongTensor([indices]))
-            if sum_of_embeddings is None:
-                sum_of_embeddings = embeddingTensor
-            else:
-                sum_of_embeddings = embeddingTensor + sum_of_embeddings
+    print(f"Loss: {np.array(losses).mean():.4f} | Accuracy: {np.array(acc).mean():.4f}")
 
-            number_of_embeddings += 1
-        average_for_input_layer = torch.div(sum_of_embeddings, number_of_embeddings)
-        return average_for_input_layer
+    return np.array(acc).mean()
 
-    def train_dataset(self, trainData, trainLabel):
-        # stochastic gradient descent, adding L2-norm regularization
-
-        model.train()
-        # for epoch in range(epochSize):
-        total_acc, total_count = 0, 0
-        trainingAccuracies = []
-        accuracy = 0.
-
-        randomIndexList = list(range(len(trainData)))
-        random.shuffle(randomIndexList)
-
-        for i in randomIndexList:
-            data = trainData[i]
-            self.optimizer.zero_grad()
-            y_real = None
-            label = trainLabel[i]
-            if label == "True":
-                y_real = torch.LongTensor([1])
-            else:
-                y_real = torch.LongTensor([0])
-
-            classes = ["False","True"]
-
-            output_probablity = model(data)
-            print("Probability")
-            print(output_probablity)
-            print(y_real)
-            loss = self.loss(output_probablity, y_real)
-            # compute gradients
-            loss.backward()
-            # update model parameters
-            self.optimizer.step()
-            total_acc += (output_probablity.argmax(1) == y_real).sum().item()
-            total_count += 1
-            accuracy = total_acc / total_count
-            print("Training Line " + str(i) + " Accuracy: " + str(accuracy) + " Real Label: " + label + " Perceived Label: " + classes[output_probablity.argmax(1)])
-        return accuracy
-
-    def evaluate_dataset(self, evalData, evalLabel):
-
-        model.eval()
-        # for epoch in range(epochSize):
-        total_acc, total_count = 0, 0
-        accuracy = 0.
-
-        randomIndexList = list(range(len(evalData)))
-        random.shuffle(randomIndexList)
-
-        with torch.no_grad():
-            for i in randomIndexList:
-                data = evalData[i]
-                y_real = None
-                label = evalLabel[i]
-                if label == "True":
-                    y_real = torch.LongTensor([1])
-                else:
-                    y_real = torch.LongTensor([0])
-
-                output_probablity = model(data)
-                loss = self.loss(output_probablity, y_real)
-                total_acc += (output_probablity.argmax(1) == y_real).sum().item()
-                total_count += 1
-                accuracy = total_acc / total_count
-
-        return accuracy
-
-    def train_and_validate_dataset(self, trainData, trainLabel, validData, validLabel, EPOCHS):
-
-        total_accu = None
-        training_accuracy = 0.
-        validation_accuracy = 0.
-
-        for epoch in range(1, EPOCHS + 1):
-            epoch_start_time = time.time()
-            training_accuracy = self.train_dataset(trainData, trainLabel)
-            validation_accuracy = self.evaluate_dataset(validData, validLabel)
-            if total_accu is not None and total_accu > validation_accuracy:
-                self.scheduler.step()
-            else:
-                total_accu = validation_accuracy
-            print('-' * 70)
-            print('| end of epoch {:3d} | time: {:5.2f}s | '
-                  'valid accuracy {:8.3f} '.format(epoch,
-                                                   time.time() - epoch_start_time,
-                                                   validation_accuracy))
-            print('-' * 70)
-
-        return training_accuracy, validation_accuracy
-
-
-if __name__ == '__main__':
+def main():
     folderPath = sys.argv[1]  # Get the filepath
     # folderPath = os.path.dirname(__file__) + "//data"
 
@@ -177,6 +56,8 @@ if __name__ == '__main__':
     use_cuda = torch.cuda.is_available()
     device = torch.device("cuda:0" if use_cuda else "cpu")
     torch.backends.cudnn.benchmark = True
+
+    word_vectors = loadEmbeddings()
 
     trainDataPath = "train.csv"
     validDataPath = "val.csv"
@@ -190,46 +71,58 @@ if __name__ == '__main__':
     validLabel = processLabel(folderPath, validDataPath)
     testLabel = processLabel(folderPath, testDataPath)
 
-    classes = ("False", "True")
-
-    word_vectors = loadEmbeddings()
+    train_dloader = make_dataloader(trainData, trainLabel, word_vectors, max_sent_length=30, batch_size=128,
+                                    device=device)
+    valid_dloader = make_dataloader(validData, validLabel, word_vectors, max_sent_length=30, batch_size=128,
+                                    device=device)
+    test_dloader = make_dataloader(testData, testLabel, word_vectors, max_sent_length=30, batch_size=128,
+                                   device=device)
 
     hiddenLayers = [{
         "name": "relu",
-        "model": nn.ReLU(),
+        "model": torch.nn.ReLU(),
         "file": "nn_relu.model",
     },
         {
             "name": "sigmoid",
-            "model": nn.Sigmoid(),
+            "model": torch.nn.Sigmoid(),
             "file": "nn_sigmoid.model",
         },
         {
             "name": "tanh",
-            "model": nn.Tanh(),
+            "model": torch.nn.Tanh(),
             "file": "nn_tanh.model",
         },
     ]
-    dropoutRates = [0.2]
+
+    dropoutRates = [0.1,0.2, 0.3, 0.5, 0.7,0.9]
+    index = 0
 
     dataPath = os.path.dirname(__file__)
     if dataPath == "":
         dataPath = "."
     dataPath = dataPath + "//data//"
     outputFileName = "output.csv"
-    csv_header = ["Hidden Layer Name", "Dropout Rate", "Accuracy (test set)","Filepath"]
+    csv_header = ["Hidden Layer Name", "Dropout Rate", "Accuracy (test set)", "Filepath"]
     csv_data = []
 
     for hiddenLayer in hiddenLayers:
         best_accuracy = None
         for dropoutRate in dropoutRates:
-            model = FC_FF_NN_Model(word_vectors, hiddenLayer["model"], dropoutRate=dropoutRate)
-            training_accuracy, validation_accuracy = model.train_and_validate_dataset(trainData,
-                                                                                      trainLabel,
-                                                                                      validData,
-                                                                                      validLabel,
-                                                                                      EPOCHS=2)
-            testing_accuracy = model.evaluate_dataset(testData, testLabel)
+            model = FC_FF_NN_Model(word_vectors, hiddenLayer=hiddenLayer["model"], dropoutRate=dropoutRate, n_classes=2)
+            model.to(device)
+            print(model)
+            criterion = torch.nn.CrossEntropyLoss()
+            optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-5)
+
+            for epoch in range(20):
+                print(f"===Epoch {epoch}===")
+                training_accuracy = train(train_dloader, model, criterion, optimizer)
+                print("Validating...")
+                validation_accuracy = test(valid_dloader, model, criterion)
+                print("Testing...")
+                testing_accuracy = test(test_dloader, model, criterion)
+
             if best_accuracy is not None and best_accuracy > testing_accuracy:
                 # Dont save model
                 print("Model not saved")
@@ -252,4 +145,8 @@ if __name__ == '__main__':
             }
             csv_data.append(data)
 
-    writeReportToCSV(csv_data,outputFileName)
+    writeReportToCSV(csv_data, outputFileName)
+
+
+if __name__ == '__main__':
+    main()
