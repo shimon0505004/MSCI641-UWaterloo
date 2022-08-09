@@ -4,6 +4,11 @@ from transformers import pipeline
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 import nltk
 
+"""
+Chunk generation Idea Adapted from from https://discuss.huggingface.co/t/summarization-on-long-documents/920/45?page=3
+to preprocess large files on bart-large-cnn. For non-chunking approach using longT5, check BodyToSummary.ipynb file
+"""
+
 nltk.download('punkt')
 
 
@@ -27,7 +32,6 @@ def write(filepath, dictionary):
         for line in dictionary:
             writer.writerow(line)
 
-#Chunk generation
 def generateChunks(essay, tokenizer):
     sentences = nltk.tokenize.sent_tokenize(essay)
     # initialize
